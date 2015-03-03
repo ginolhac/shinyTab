@@ -1,0 +1,133 @@
+---
+title: "Rationale"
+output: html_document
+---
+
+### 140201, Mass spectrometry
+
+#### Input data
+Score and coverage data associated to protein accession number come form Susann Mudrich.
+
+* Four experimental conditions:
+    + Control
+    + IL27
+    + Calprotectin
+    + IL27 + Calprotectin
+* The time series consists in  
+    + 6h
+    + 12h
+    + 24h
+* 9 biological replicates
+
+```{r, echo=FALSE, message=FALSE}
+library("ggplot2")
+library("dplyr")
+source("../utils.R") 
+mass <- read.table("../mass.tsv", sep = "\t", header = TRUE) %>%
+          tbl_df()
+```
+
+A summary of the row data is available below:
+
+```{r, echo=FALSE}
+summary(mass)
+```
+
+***
+
+Unique accession numbers are distrubted across replicates as follows:
+
+```{r, echo=FALSE}
+# count Accession per replicates
+mass2  <- group_by(mass, Accession, Condition, Time) %>%
+                mutate(n = n())
+# get the cumulative count of prot ID 
+cumcount = c()
+for(cond in levels(mass$Condition)){
+    # do the cumulative sum from 9 to 1 replicate
+    tab <- as.data.frame(cumsum(rev(table(distinct(filter(mass2, Condition == cond))$n)))) %>%
+        add_rownames()
+    colnames(tab) <- c("Replicate", "cumCount")
+    cumcount <- rbind(cumcount, cbind(tab, Condition = cond))
+}
+
+# plot common proteins found in _n_ replicates
+b <- ggplot(cumcount)+
+    geom_bar(aes(x = Replicate, y = cumCount, fill = Condition), 
+             stat = "identity", position = "dodge")+
+    theme_bw()+
+    ylab("Count of unique Accession")+
+    xlab(expression("ID found in at least "*italic(n)* " replicate(s)"))+
+    ggtitle("Time = 6h")
+plot(b)
+```
+
+***
+
+#### Filtering for protein presence across replicates 
+
+Filtering can be dynamically be changed. By default, one protein must be found in at least `5` replicates for each condition. This means that it must be found associated with at least `20` Scores for each of the `4` conditions.  
+We notice that replicate 7 for IL27 reported twice as less proteins than the other replicates.
+Moreover, it appeared as an outlier and then was subsequently discarded. 
+
+#### Imputation of missing values
+
+Only `90` proteins are common to all replicates for all conditions. If the above filtering is less stringent, missing data are introduced. Those `NA` can be impute from neighbors data using the R bioconductor package `impute` and the function `impute.knn`.  
+This function is used with default arguments displayed below:
+
+```{r, eval=FALSE}
+# Usage
+impute.knn(data ,k = 10, rowmax = 0.5, colmax = 0.8, maxp = 1500, rng.seed=362436069)
+# data  
+An expression matrix with genes in the rows, samples in the columns
+# k	
+Number of neighbors to be used in the imputation (default=10)
+# rowmax	
+The maximum percent missing data allowed in any row (default 50%). For any rows with more than rowmax% missing are imputed using the overall mean per sample.
+# colmax	
+The maximum percent missing data allowed in any column (default 80%). If any column has more than colmax% missing data, the program halts and reports an error.
+# maxp	
+The largest block of genes imputed using the knn algorithm inside impute.knn (default 1500); larger blocks are divided by two-means clustering (recursively) prior to imputation. If maxp=p, only knn imputation is done.
+```
+
+#### Variance stabilization
+
+It is performed using the the R package `vsn` and the function `vsn2`. The variance can be visualized before and after correction.
+
+#### Contrast analysis
+
+The constrat is derived from the RNA-seq analysis and uses the R bioconductor package `limma`. 
+And code from Enrico Glaab:
+```{r}
+# code from Enrico Glaab
+contrasts_limma <- function(dat, groups, ID, control, treatment){
+
+  design <- model.matrix(~ -1 + 
+                        factor(letters[ifelse(groups[c(which(groups == control),
+                               which(groups == treatment))] == control, 0, 1) + 1]))
+  
+  outnum <- as.vector(ifelse(groups[c(which(groups == control),
+                                      which(groups == treatment))] == control,
+                             0, 1))
+  colnames(design) <- unique(letters[outnum + 1])
+  
+  corfit <- duplicateCorrelation(dat[,c(which(groups == control),
+                                        which(groups == treatment))],
+                                 design,
+                                 block = ID)
+  #corfit$consensus
+  fit <- lmFit(dat[,c(which(groups == control),
+                         which(groups == treatment))],
+               design,
+               block = ID,
+               correlation = corfit$consensus)
+  
+  cm <- makeContrasts(comp = b - a, levels = design)
+  fit2 <- contrasts.fit(fit, cm)
+  return(eBayes(fit2))
+}
+```
+
+#### Output tables
+
+Be default, the top 20 entries, sorted by the adjusted p-values are displayed.
